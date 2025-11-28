@@ -5,6 +5,8 @@
 #include <QPen>
 #include <QFont>
 #include <QDebug>
+#include <QPixmap>
+#include <QImage>
 
 Chessboard::Chessboard(QWidget *parent)
     : QWidget(parent)
@@ -15,6 +17,9 @@ Chessboard::Chessboard(QWidget *parent)
 {
     // 初始化棋盘
     reset();
+
+    // 加载马的图片
+    loadKnightImage();
 
     // 动画定时器配置
     connect(&m_animationTimer, &QTimer::timeout, this, [this]() {
@@ -48,6 +53,25 @@ Chessboard::Chessboard(QWidget *parent)
 
     // 设置最小尺寸
     setMinimumSize(400, 400);
+}
+
+// 添加图片加载函数
+void Chessboard::loadKnightImage()
+{
+    // 从资源文件加载图片（路径以 : 开头）
+    m_knightPixmap.load(u8":/images/f2LNqD2fxJ.jpg");
+
+    // 检查图片是否加载成功
+    if (m_knightPixmap.isNull()) {
+        qWarning() << "警告：马的图片加载失败！请检查资源文件是否正确添加";
+
+        // 加载失败时，创建一个默认的替代图形（深紫色方块）
+        QImage defaultImage(64, 64, QImage::Format_ARGB32);
+        defaultImage.fill(QColor(72, 61, 139, 255)); // 深紫色
+        m_knightPixmap = QPixmap::fromImage(defaultImage);
+    } else {
+        qDebug() << "马的图片加载成功，尺寸：" << m_knightPixmap.size();
+    }
 }
 
 void Chessboard::reset()
@@ -131,7 +155,7 @@ void Chessboard::startTour()
     });
 }
 
-// 以下函数（knightTour、backtrack、getValidMoves 等）保持不变，无需修改
+// 以下函数（knightTour、backtrack、getValidMoves 等）保持不变
 bool Chessboard::knightTour(const QPoint& startPos)
 {
     // 重置路径和访问标记
@@ -339,31 +363,34 @@ void Chessboard::drawPath(QPainter& painter)
     }
 }
 
+// drawKnight 函数：使用图片绘制马
 void Chessboard::drawKnight(QPainter& painter)
 {
-    if (m_currentPos.x() == -1)
+    if (m_currentPos.x() == -1 || m_knightPixmap.isNull())
         return;
 
     // 计算棋子位置（居中显示）
-    int x = m_currentPos.x() * m_cellSize + m_cellSize / 2;
-    int y = m_currentPos.y() * m_cellSize + m_cellSize / 2;
-    int size = m_cellSize * 0.7;
+    int x = m_currentPos.x() * m_cellSize;
+    int y = m_currentPos.y() * m_cellSize;
 
-    // 绘制马的图标（这里使用简单图形模拟，实际可替换为图片）
-    painter.setBrush(QColor(72, 61, 139)); // 深紫色
-    painter.setPen(Qt::NoPen);
+    // 设置图片显示大小（占格子的80%，留出边框）
+    int displaySize = m_cellSize * 0.8;
+    int offset = (m_cellSize - displaySize) / 2; // 居中偏移
 
-    // 马的头部
-    painter.drawEllipse(x - size/2, y - size/2, size/2, size/2);
-    // 马的身体
-    painter.drawRect(x - size/4, y - size/4, size/2, size);
-    // 马的四肢
-    painter.drawRect(x - size/2, y + size/4, size/6, size/3);
-    painter.drawRect(x + size/3, y + size/4, size/6, size/3);
-    painter.drawRect(x - size/2, y - size/12, size/6, size/3);
-    painter.drawRect(x + size/3, y - size/12, size/6, size/3);
-    // 马的尾巴
-    painter.drawEllipse(x + size/4, y - size/2, size/4, size/2);
+    // 绘制图片（保持比例，抗锯齿）
+    painter.setRenderHint(QPainter::SmoothPixmapTransform); // 平滑缩放
+    painter.drawPixmap(
+        x + offset,                  // 绘制起始x坐标
+        y + offset,                  // 绘制起始y坐标
+        displaySize,                 // 绘制宽度
+        displaySize,                 // 绘制高度
+        m_knightPixmap.scaled(
+            displaySize,
+            displaySize,
+            Qt::KeepAspectRatioByExpanding,  // 保持比例并填充
+            Qt::SmoothTransformation        // 平滑变换
+            )
+        );
 }
 
 void Chessboard::mousePressEvent(QMouseEvent *event)

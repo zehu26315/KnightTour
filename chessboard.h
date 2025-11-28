@@ -7,6 +7,7 @@
 #include <QTimer>
 #include <QColor>
 #include <QPainter>
+#include <QPixmap>  // 添加图片处理头文件
 
 // 棋盘大小
 const int BOARD_SIZE = 8;
@@ -61,10 +62,12 @@ private:
 
     // 绘制棋盘
     void drawBoard(QPainter& painter);
-    // 绘制棋子
+    // 绘制棋子（使用图片）
     void drawKnight(QPainter& painter);
     // 绘制路径和步骤
     void drawPath(QPainter& painter);
+    // 加载马的图片
+    void loadKnightImage();
 
     // 棋盘数据
     int m_board[BOARD_SIZE][BOARD_SIZE]; // 存储步骤（0=未访问，1~64=步骤，65=返回起点）
@@ -87,6 +90,7 @@ private:
     QColor m_selectedColor; // 选中格子颜色
     QColor m_pathColor; // 路径颜色
     QColor m_currentColor; // 当前位置颜色
+    QPixmap m_knightPixmap; // 马的图片
 };
 
 #endif // CHESSBOARD_H
