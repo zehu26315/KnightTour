@@ -1,6 +1,5 @@
 #include "chessboard.h"
 #include <QMouseEvent>
-#include <QPainter>
 #include <QBrush>
 #include <QPen>
 #include <QFont>
@@ -8,6 +7,8 @@
 #include <QPixmap>
 #include <QImage>
 #include <algorithm>
+#include <QElapsedTimer>
+#include <QApplication>
 
 
 Chessboard::Chessboard(QWidget *parent)
@@ -16,397 +17,487 @@ Chessboard::Chessboard(QWidget *parent)
     , m_hasSolution(false)
     , m_animationStep(0)
     , m_animationSpeed(500) // 默认中等速度
+    , m_lightColor(240, 217, 181)    // #f0d9b5（浅棕）
+    , m_darkColor(181, 136, 99)      // #b58863（深棕）
+    , m_selectedColor(100, 181, 246) // #64b5f6（蓝色，选中起点）
+    , m_pathColor(129, 199, 132)     // #81c784（绿色，路径线）
+    , m_currentColor(255, 183, 77)   // #ffb74d（橙色，当前位置）
 {
-    // 初始化棋盘
-    reset();
-
-    // 加载马的图片
+    // 初始化配置集中化
+    initWidget();
     loadKnightImage();
-
-    // 动画定时器配置
-    connect(&m_animationTimer, &QTimer::timeout, this, [this]() {
-        if (m_animationStep < m_path.size()) {
-            m_currentPos = m_path[m_animationStep];
-            m_animationStep++;
-            update(); // 刷新界面
-        } else {
-            // 演示完成，返回起点
-            if (m_hasSolution) {
-                m_currentPos = m_startPos;
-                m_board[m_startPos.x()][m_startPos.y()] = BOARD_SIZE * BOARD_SIZE + 1;
-                update();
-                emit statusChanged("遍历完成！已返回起点（共64步）");
-                emit tourFinished(true);
-            } else {
-                emit statusChanged("未找到有效路径，请重新选择起点");
-                emit tourFinished(false);
-            }
-            m_animationTimer.stop();
-            m_isRunning = false;
-        }
-    });
-
-    // 初始化颜色
-    m_lightColor = QColor(240, 217, 181); // #f0d9b5（浅棕）
-    m_darkColor = QColor(181, 136, 99); // #b58863（深棕）
-    m_selectedColor = QColor(100, 181, 246); // #64b5f6（蓝色，选中起点）
-    m_pathColor = QColor(129, 199, 132); // #81c784（绿色，路径线）
-    m_currentColor = QColor(255, 183, 77); // #ffb74d（橙色，当前位置）
-
-    // 设置最小尺寸
-    setMinimumSize(400, 400);
+    initAnimationTimer();
+    reset(); // 初始化棋盘状态
 }
 
-// 加载马的图片（资源文件路径需自行调整）
+// 初始化窗口基础配置
+void Chessboard::initWidget()
+{
+    setMinimumSize(MIN_WINDOW_SIZE, MIN_WINDOW_SIZE);
+    setWindowTitle("骑士巡游");
+    // 设置鼠标指针（棋盘模式时显示手型）
+    setCursor(Qt::PointingHandCursor);
+}
+
+// 初始化动画定时器
+void Chessboard::initAnimationTimer()
+{
+    m_animationTimer.setInterval(m_animationSpeed);
+    connect(&m_animationTimer, &QTimer::timeout, this, &Chessboard::onAnimationTimeout);
+}
+
+// 加载马的图片（优化资源加载逻辑）
 void Chessboard::loadKnightImage()
 {
-    m_knightPixmap.load(u8":/images/f2LNqD2fxJ.jpg");
+    // 支持多路径 fallback，提高可靠性
+    const QStringList imagePaths = {
+        u8":/images/knight.png",
+        u8":/images/f2LNqD2fxJ.jpg",
+        u8":/images/knight_default.png"
+    };
 
-    if (m_knightPixmap.isNull()) {
-        qWarning() << "警告：马的图片加载失败！使用默认图形替代";
-        QImage defaultImage(64, 64, QImage::Format_ARGB32);
-        defaultImage.fill(QColor(72, 61, 139, 255)); // 深紫色方块
-        m_knightPixmap = QPixmap::fromImage(defaultImage);
-    } else {
-        qDebug() << "马的图片加载成功，尺寸：" << m_knightPixmap.size();
+    for (const QString& path : imagePaths) {
+        m_knightPixmap.load(path);
+        if (!m_knightPixmap.isNull()) {
+            qDebug() << "马的图片加载成功，路径：" << path << " 尺寸：" << m_knightPixmap.size();
+            return;
+        }
     }
+
+    // 完全加载失败时，创建更美观的默认图形
+    qWarning() << "警告：所有马的图片路径加载失败！使用默认图形替代";
+    QImage defaultImage(64, 64, QImage::Format_ARGB32);
+    defaultImage.fill(Qt::transparent); // 透明背景
+    QPainter p(&defaultImage);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setBrush(QColor(72, 61, 139)); // 深紫色
+    p.setPen(Qt::white);
+    p.drawEllipse(4, 4, 56, 56);     // 圆形底座
+    p.setBrush(Qt::white);
+    p.drawText(defaultImage.rect(), Qt::AlignCenter, "马"); // 中文标识
+    m_knightPixmap = QPixmap::fromImage(defaultImage);
 }
 
-// 重置棋盘状态
+// 重置棋盘状态（优化状态清零逻辑）
 void Chessboard::reset()
 {
     m_animationTimer.stop();
 
-    // 重置棋盘数据（0=未访问，1~64=访问步骤）
-    memset(m_board, 0, sizeof(m_board));
-    memset(m_visited, false, sizeof(m_visited));
-    m_path.clear();
+    // 高效重置数组（避免重复 memset）
+    std::fill_n(&m_board[0][0], BOARD_SIZE * BOARD_SIZE, 0);
+    std::fill_n(&m_visited[0][0], BOARD_SIZE * BOARD_SIZE, false);
 
-    // 重置状态变量
-    m_startPos = QPoint(-1, -1);
-    m_currentPos = QPoint(-1, -1);
-    m_isRunning = false;
-    m_hasSolution = false;
+    // 状态变量统一重置
+    m_path.clear();
+    m_startPos = m_currentPos = QPoint(-1, -1);
+    m_isRunning = m_hasSolution = false;
     m_animationStep = 0;
 
     update();
-    emit statusChanged("请选择起始位置");
-    emit startBtnEnabled(false); // 重置后禁用开始按钮
+    emit statusChanged(tr("请选择起始位置"));
+    emit startBtnEnabled(false);
 }
 
-// 设置动画速度（0=慢，1=中，2=快）
+// 设置动画速度（优化参数校验和用户反馈）
 void Chessboard::setSpeed(int level)
 {
+    // 范围校验，避免无效值
+    level = qBound(0, level, 2);
     switch (level) {
-    case 0: m_animationSpeed = 1000; break;
-    case 1: m_animationSpeed = 500; break;
-    case 2: m_animationSpeed = 200; break;
-    default: m_animationSpeed = 500;
+    case 0: m_animationSpeed = 1000; emit statusChanged(tr("动画速度：慢")); break;
+    case 1: m_animationSpeed = 500;  emit statusChanged(tr("动画速度：中")); break;
+    case 2: m_animationSpeed = 200;  emit statusChanged(tr("动画速度：快")); break;
     }
     m_animationTimer.setInterval(m_animationSpeed);
 }
 
-// 设置起始位置
+// 设置起始位置（优化参数校验和状态一致性）
 void Chessboard::setStartPosition(const QPoint& pos)
 {
-    if (pos.x() < 0 || pos.x() >= BOARD_SIZE || pos.y() < 0 || pos.y() >= BOARD_SIZE)
+    // 严格坐标校验
+    if (!isValidPos(pos)) {
+        qWarning() << "无效的起始位置：" << pos;
         return;
+    }
 
-    m_startPos = pos;
-    m_currentPos = pos;
-    m_board[pos.x()][pos.y()] = 1; // 起始位置标记为第1步
+    m_startPos = m_currentPos = pos;
     m_visited[pos.x()][pos.y()] = true;
+    m_board[pos.x()][pos.y()] = 1;
+    m_path.append(pos);
 
     update();
-    emit statusChanged(QString("起始位置：(%1, %2)").arg(pos.x()+1).arg(pos.y()+1));
-    emit startBtnEnabled(true); // 选择起点后启用开始按钮
+    emit statusChanged(tr("起始位置：(%1, %2)").arg(pos.x()+1).arg(pos.y()+1));
+    emit startBtnEnabled(true);
 }
 
-// 开始骑士巡游（启动计算和动画）
+// 开始骑士巡游（优化异步逻辑和用户体验）
 void Chessboard::startTour()
 {
-    if (m_startPos.x() == -1 || m_isRunning)
+    if (!isValidPos(m_startPos) || m_isRunning) {
+        emit statusChanged(tr("无法开始：请先选择有效起始位置"));
         return;
+    }
 
     m_isRunning = true;
-    emit statusChanged("正在计算路径...");
+    emit statusChanged(tr("正在计算路径..."));
     emit startBtnEnabled(false);
 
-    // 异步计算路径（避免阻塞UI）
-    QTimer::singleShot(0, this, [this]() {
-        m_hasSolution = knightTour(m_startPos);
-
-        if (m_hasSolution) {
-            emit statusChanged("开始演示遍历过程");
-            m_animationStep = 1;
-            m_animationTimer.setInterval(m_animationSpeed);
-            m_animationTimer.start();
-        } else {
-            emit statusChanged("未找到有效路径，请重新选择起点");
-            m_isRunning = false;
-            emit tourFinished(false);
-            emit startBtnEnabled(true);
-        }
-    });
+    // 异步计算（使用Qt::QueuedConnection确保UI响应）
+    QMetaObject::invokeMethod(this, &Chessboard::calculateTour, Qt::QueuedConnection);
 }
 
-// 骑士巡游主函数（入口）
-bool Chessboard::knightTour(const QPoint& startPos)
+// 路径计算（独立函数，便于调试和维护）
+void Chessboard::calculateTour()
 {
-    // 重置路径和访问标记
+    QElapsedTimer timer;
+    timer.start();
+
+    // 重新初始化计算相关状态（避免残留数据影响）
+    std::fill_n(&m_visited[0][0], BOARD_SIZE * BOARD_SIZE, false);
+    std::fill_n(&m_board[0][0], BOARD_SIZE * BOARD_SIZE, 0);
     m_path.clear();
-    memset(m_visited, false, sizeof(m_visited));
-    memset(m_board, 0, sizeof(m_board));
 
-    int startX = startPos.x();
-    int startY = startPos.y();
-    m_visited[startX][startY] = true;
-    m_board[startX][startY] = 1;
-    m_path.append(startPos);
+    m_visited[m_startPos.x()][m_startPos.y()] = true;
+    m_board[m_startPos.x()][m_startPos.y()] = 1;
+    m_path.append(m_startPos);
 
-    // 回溯求解（从第2步开始）
-    return backtrack(startX, startY, 2);
+    m_hasSolution = backtrack(m_startPos.x(), m_startPos.y(), 2);
+    qDebug() << "路径计算耗时：" << timer.elapsed() << "ms，是否找到解：" << m_hasSolution;
+
+    if (m_hasSolution) {
+        emit statusChanged(tr("开始演示遍历过程（共%1步）").arg(m_path.size()));
+        m_animationStep = 1;
+        m_animationTimer.start();
+    } else {
+        emit statusChanged(tr("未找到有效路径（计算耗时%1ms），请重新选择起点").arg(timer.elapsed()));
+        m_isRunning = false;
+        emit tourFinished(false);
+        emit startBtnEnabled(true);
+    }
 }
 
-// 回溯算法核心（递归求解）
+// 动画定时器超时处理（独立槽函数，逻辑清晰）
+void Chessboard::onAnimationTimeout()
+{
+    if (m_animationStep < m_path.size()) {
+        m_currentPos = m_path[m_animationStep];
+        m_animationStep++;
+        update();
+        // 实时更新进度
+        emit statusChanged(tr("遍历中：第%1步").arg(m_animationStep));
+    } else {
+        finishAnimation();
+    }
+}
+
+// 动画结束处理（统一收尾逻辑）
+void Chessboard::finishAnimation()
+{
+    m_animationTimer.stop();
+    m_isRunning = false;
+
+    if (m_hasSolution) {
+        // 标记返回起点的步骤（视觉优化）
+        m_board[m_startPos.x()][m_startPos.y()] = BOARD_SIZE * BOARD_SIZE + 1;
+        m_currentPos = m_startPos;
+        update();
+        emit statusChanged(tr("遍历完成！已返回起点（共%1步）").arg(BOARD_SIZE * BOARD_SIZE + 1));
+        emit tourFinished(true);
+    } else {
+        emit statusChanged(tr("遍历中断：未找到完整路径"));
+        emit tourFinished(false);
+    }
+}
+
+// 回溯算法核心（优化剪枝和性能）
 bool Chessboard::backtrack(int x, int y, int step)
 {
-    // 终止条件：已访问所有64个格子，且能返回起点（形成回路）
-    if (step > BOARD_SIZE * BOARD_SIZE) {
+    // 超时保护（避免无限递归）
+    static QElapsedTimer backtrackTimer;
+    if (step == 2) { // 首次调用时启动计时器
+        backtrackTimer.start();
+    } else if (backtrackTimer.elapsed() > MAX_BACKTRACK_TIME) {
+        qWarning() << "回溯超时，终止计算";
+        return false;
+    }
+
+    const int totalSteps = BOARD_SIZE * BOARD_SIZE;
+    // 终止条件：完成所有格子遍历
+    if (step > totalSteps) {
         return canReturnToStart(x, y);
     }
 
-    // 获取当前位置的所有有效移动（未访问且在棋盘内）
+    // 获取并排序有效移动（Warnsdorff优化）
     QVector<QPoint> validMoves = getValidMoves(x, y);
+    if (validMoves.isEmpty()) {
+        return false;
+    }
+    sortMovesByWarnsdorff(validMoves, x, y, step);
 
-    // 关键优化：按Warnsdorff规则排序有效移动
-    sortMovesByWarnsdorff(validMoves, x, y);
+    // 尝试所有移动（优化循环效率）
+    for (const QPoint& dir : validMoves) {
+        const int nx = x + dir.x();
+        const int ny = y + dir.y();
 
-    // 尝试所有排序后的移动
-    for (const QPoint& move : validMoves) {
-        int nx = move.x();
-        int ny = move.y();
+        // 跳过已访问的位置（双重校验，避免无效操作）
+        if (m_visited[nx][ny]) {
+            continue;
+        }
 
-        // 标记为已访问，记录步骤和路径
+        // 标记访问状态
         m_visited[nx][ny] = true;
         m_board[nx][ny] = step;
         m_path.append(QPoint(nx, ny));
 
-        // 递归探索下一步
+        // 递归探索（提前返回，减少栈开销）
         if (backtrack(nx, ny, step + 1)) {
-            return true; // 找到解，直接返回
+            return true;
         }
 
-        // 回溯：撤销标记
+        // 回溯：撤销标记（严格对称操作）
         m_visited[nx][ny] = false;
         m_board[nx][ny] = 0;
         m_path.removeLast();
     }
 
-    return false; // 无有效移动，回溯
+    return false;
 }
 
-// 获取当前位置的所有有效移动（未访问且在棋盘内）
-QVector<QPoint> Chessboard::getValidMoves(int x, int y)
+// 检查坐标是否有效（工具函数，减少重复代码）
+bool Chessboard::isValidPos(const QPoint& pos) const
 {
-    QVector<QPoint> validMoves;
-    int dirCount = sizeof(MOVE_DIRECTIONS) / sizeof(MOVE_DIRECTIONS[0]); // 计算方向数组长度
-    for (int i = 0; i < dirCount; ++i) {
-        const QPoint& dir = MOVE_DIRECTIONS[i]; // 通过下标访问
-        int nx = x + dir.x();
-        int ny = y + dir.y();
+    return pos.x() >= 0 && pos.x() < BOARD_SIZE &&
+           pos.y() >= 0 && pos.y() < BOARD_SIZE;
+}
+
+// 获取有效移动（优化循环效率）
+QVector<QPoint> Chessboard::getValidMoves(int x, int y) const
+{
+    QVector<QPoint> moves;
+    moves.reserve(MOVE_COUNT); // 预分配空间，避免多次扩容
+
+    for (const QPoint& dir : MOVE_DIRECTIONS) {
+        const int nx = x + dir.x();
+        const int ny = y + dir.y();
         if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && !m_visited[nx][ny]) {
-            validMoves.append(QPoint(nx, ny));
+            moves.append(dir);
         }
     }
-    return validMoves;
+
+    return moves;
 }
 
-// 核心优化：按Warnsdorff规则排序有效移动
-void Chessboard::sortMovesByWarnsdorff(QVector<QPoint>& moves, int x, int y)
+// Warnsdorff规则排序（优化性能和路径成功率）
+void Chessboard::sortMovesByWarnsdorff(QVector<QPoint>& moves, int x, int y, int step)
 {
-    Q_UNUSED(x);
-    Q_UNUSED(y);
+    const int totalSteps = BOARD_SIZE * BOARD_SIZE;
+    const bool isFinalStep = (step == totalSteps);
 
-    // 定义一个结构体存储移动的关键信息（避免重复计算）
-    struct MoveInfo {
-        QPoint pos;          // 移动目标位置
-        int nextValidCount;  // 从该位置出发的有效移动数（Warnsdorff核心）
-        int gridIndex;       // 方格序号（x*8 + y，用于相同优先级时排序）
+    // 按优先级排序：1. 是否能返回起点（最后一步） 2. 后续有效移动数 3. 坐标序号
+    std::sort(moves.begin(), moves.end(), [this, x, y, isFinalStep](const QPoint& a, const QPoint& b) {
+        const int ax = x + a.x();
+        const int ay = y + a.y();
+        const int bx = x + b.x();
+        const int by = y + b.y();
 
-        MoveInfo(const QPoint& p, int count, int index)
-            : pos(p), nextValidCount(count), gridIndex(index) {}
-    };
-
-    QVector<MoveInfo> moveInfos;
-    moveInfos.reserve(moves.size());
-
-    // 为每个有效移动计算「后续有效移动数」和「方格序号」
-    for (const QPoint& p : moves) {
-        int nextCount = getValidMoves(p.x(), p.y()).size(); // 关键：计算后续可移动数
-        int index = p.x() * BOARD_SIZE + p.y();            // 方格序号（行优先）
-        moveInfos.emplace_back(p, nextCount, index);
-    }
-
-    // 按Warnsdorff规则排序：
-    // 1. 优先选择「后续有效移动数少」的位置（避免提前陷入死胡同）
-    // 2. 若后续移动数相同，优先选择「方格序号小」的位置（行优先，左上到右下）
-    std::sort(moveInfos.begin(), moveInfos.end(), [](const MoveInfo& a, const MoveInfo& b) {
-        if (a.nextValidCount != b.nextValidCount) {
-            return a.nextValidCount < b.nextValidCount; // 规则1：后续移动数少的优先
+        // 最后一步优先选择能返回起点的移动
+        if (isFinalStep) {
+            const bool aCanReturn = canReturnToStart(ax, ay);
+            const bool bCanReturn = canReturnToStart(bx, by);
+            if (aCanReturn != bCanReturn) {
+                return aCanReturn;
+            }
         }
-        return a.gridIndex < b.gridIndex; // 规则2：方格序号小的优先
+
+        // 核心规则：后续有效移动数少的优先（避免死胡同）
+        const int aCount = countValidMoves(ax, ay);
+        const int bCount = countValidMoves(bx, by);
+        if (aCount != bCount) {
+            return aCount < bCount;
+        }
+
+        // 辅助排序：坐标序号（确保排序稳定性）
+        const int aIndex = ax * BOARD_SIZE + ay;
+        const int bIndex = bx * BOARD_SIZE + by;
+        return aIndex < bIndex;
     });
-
-    // 重新构造排序后的移动列表
-    moves.clear();
-    moves.reserve(moveInfos.size());
-    for (const MoveInfo& info : moveInfos) {
-        moves.append(info.pos);
-    }
 }
 
-// 检查当前位置是否能返回起点（形成回路）
-bool Chessboard::canReturnToStart(int x, int y)
+// 计数有效移动（const优化，避免修改成员）
+int Chessboard::countValidMoves(int x, int y) const
 {
-    int dirCount = sizeof(MOVE_DIRECTIONS) / sizeof(MOVE_DIRECTIONS[0]); // 计算方向数组长度
-    for (int i = 0; i < dirCount; ++i) {
-        const QPoint& dir = MOVE_DIRECTIONS[i]; // 通过下标访问
-        int nx = x + dir.x();
-        int ny = y + dir.y();
-        if (nx == m_startPos.x() && ny == m_startPos.y()) {
+    int count = 0;
+    for (const QPoint& dir : MOVE_DIRECTIONS) {
+        const int nx = x + dir.x();
+        const int ny = y + dir.y();
+        if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && !m_visited[nx][ny]) {
+            count++;
+        }
+    }
+    return count;
+}
+
+// 检查是否能返回起点（优化循环效率）
+bool Chessboard::canReturnToStart(int x, int y) const
+{
+    for (const QPoint& dir : MOVE_DIRECTIONS) {
+        if (x + dir.x() == m_startPos.x() && y + dir.y() == m_startPos.y()) {
             return true;
         }
     }
     return false;
 }
 
-// 绘制棋盘（重写paintEvent）
+// 绘制棋盘（优化绘制效率和视觉效果）
 void Chessboard::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event);
     QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing); // 抗锯齿
+    painter.setRenderHints({QPainter::Antialiasing, QPainter::SmoothPixmapTransform});
 
-    // 计算格子大小（自适应窗口，正方形格子）
-    m_cellSize = qMin(width(), height()) / BOARD_SIZE;
-    // 棋盘居中偏移
-    int offsetX = (width() - m_cellSize * BOARD_SIZE) / 2;
-    int offsetY = (height() - m_cellSize * BOARD_SIZE) / 2;
+    // 计算棋盘布局（自适应窗口，保持正方形）
+    const int cellSize = qMin(width(), height()) / BOARD_SIZE;
+    const int offsetX = (width() - cellSize * BOARD_SIZE) / 2;
+    const int offsetY = (height() - cellSize * BOARD_SIZE) / 2;
+
+    // 保存画家状态，避免影响其他绘制
+    painter.save();
     painter.translate(offsetX, offsetY);
 
-    // 绘制棋盘格子
-    drawBoard(painter);
-    // 绘制路径和步骤数
-    drawPath(painter);
-    // 绘制马的图标
-    if (m_startPos.x() != -1 || m_isRunning) {
-        drawKnight(painter);
-    }
+    // 分层绘制（按顺序优化渲染效率）
+    drawBoardGrid(painter, cellSize);
+    drawPathLines(painter, cellSize);
+    drawStepNumbers(painter, cellSize);
+    drawCurrentPosition(painter, cellSize);
+    drawKnightIcon(painter, cellSize);
+
+    painter.restore();
 }
 
-// 绘制棋盘格子（交替颜色）
-void Chessboard::drawBoard(QPainter& painter)
+// 绘制棋盘格子（优化颜色切换逻辑）
+void Chessboard::drawBoardGrid(QPainter& painter, int cellSize)
 {
     for (int x = 0; x < BOARD_SIZE; x++) {
         for (int y = 0; y < BOARD_SIZE; y++) {
-            QColor color = (x + y) % 2 == 0 ? m_lightColor : m_darkColor;
-            // 起始位置高亮（未运行时）
-            if (x == m_startPos.x() && y == m_startPos.y() && !m_isRunning) {
+            QColor color = ((x + y) % 2 == 0) ? m_lightColor : m_darkColor;
+            // 未运行时高亮起点
+            if (!m_isRunning && x == m_startPos.x() && y == m_startPos.y()) {
                 color = m_selectedColor;
             }
-            painter.setBrush(color);
-            painter.setPen(Qt::NoPen);
-            painter.drawRect(x * m_cellSize, y * m_cellSize, m_cellSize, m_cellSize);
+            painter.fillRect(x * cellSize, y * cellSize, cellSize, cellSize, color);
         }
     }
 }
 
-// 绘制路径线条和步骤数字
-void Chessboard::drawPath(QPainter& painter)
+// 绘制路径线条（优化线条绘制效率）
+void Chessboard::drawPathLines(QPainter& painter, int cellSize)
 {
-    // 绘制路径线条（绿色）
-    painter.setPen(QPen(m_pathColor, 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    for (int i = 1; i < m_animationStep && i < m_path.size(); i++) {
-        QPoint prev = m_path[i-1];
-        QPoint curr = m_path[i];
-        // 线条起点和终点（格子中心）
-        int x1 = prev.x() * m_cellSize + m_cellSize / 2;
-        int y1 = prev.y() * m_cellSize + m_cellSize / 2;
-        int x2 = curr.x() * m_cellSize + m_cellSize / 2;
-        int y2 = curr.y() * m_cellSize + m_cellSize / 2;
-        painter.drawLine(x1, y1, x2, y2);
+    if (m_path.size() < 2 || m_animationStep < 2) {
+        return;
     }
 
-    // 绘制步骤数字（白色，带黑色半透明背景）
+    painter.setPen(QPen(m_pathColor, 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    const int halfSize = cellSize / 2;
+
+    for (int i = 1; i < m_animationStep && i < m_path.size(); i++) {
+        const QPoint& prev = m_path[i-1];
+        const QPoint& curr = m_path[i];
+        const int x1 = prev.x() * cellSize + halfSize;
+        const int y1 = prev.y() * cellSize + halfSize;
+        const int x2 = curr.x() * cellSize + halfSize;
+        const int y2 = curr.y() * cellSize + halfSize;
+        painter.drawLine(x1, y1, x2, y2);
+    }
+}
+
+// 绘制步骤数字（优化字体适配和视觉效果）
+void Chessboard::drawStepNumbers(QPainter& painter, int cellSize)
+{
     QFont font;
-    font.setPointSize(m_cellSize / 4);
+    font.setPointSizeF(cellSize * 0.25); // 自适应字体大小
     font.setBold(true);
     painter.setFont(font);
     painter.setPen(Qt::white);
 
+    const int dotSize = cellSize / 3;
+    const QRect dotRect(0, 0, dotSize, dotSize);
+
     for (int x = 0; x < BOARD_SIZE; x++) {
         for (int y = 0; y < BOARD_SIZE; y++) {
-            int step = m_board[x][y];
+            const int step = m_board[x][y];
             if (step > 0 && step <= m_animationStep) {
-                // 绘制数字背景（黑色半透明圆形）
-                painter.setBrush(QColor(0, 0, 0, 150));
-                painter.drawEllipse(x * m_cellSize + 5, y * m_cellSize + 5, m_cellSize / 3, m_cellSize / 3);
-                // 绘制步骤数字（居中）
-                painter.drawText(x * m_cellSize + 5, y * m_cellSize + 5, m_cellSize / 3, m_cellSize / 3,
+                // 绘制半透明黑色背景圆
+                painter.setBrush(QColor(0, 0, 0, 180));
+                painter.drawEllipse(x * cellSize + 5, y * cellSize + 5, dotSize, dotSize);
+                // 绘制居中数字
+                painter.drawText(x * cellSize + 5, y * cellSize + 5, dotSize, dotSize,
                                  Qt::AlignCenter, QString::number(step));
             }
         }
     }
-
-    // 高亮当前位置（橙色半透明）
-    if (m_currentPos.x() != -1) {
-        painter.setBrush(QColor(m_currentColor.rgba() & 0x7FFFFFFF)); // 半透明处理（保留RGB，Alpha=127）
-        painter.setPen(Qt::NoPen);
-        painter.drawRect(m_currentPos.x() * m_cellSize, m_currentPos.y() * m_cellSize, m_cellSize, m_cellSize);
-    }
 }
 
-// 绘制马的图标（使用图片或默认图形）
-void Chessboard::drawKnight(QPainter& painter)
+// 绘制当前位置（优化高亮效果）
+void Chessboard::drawCurrentPosition(QPainter& painter, int cellSize)
 {
-    if (m_currentPos.x() == -1 || m_knightPixmap.isNull())
+    if (!isValidPos(m_currentPos)) {
         return;
+    }
 
-    // 马的图标居中显示（占格子80%大小）
-    int x = m_currentPos.x() * m_cellSize;
-    int y = m_currentPos.y() * m_cellSize;
-    int displaySize = m_cellSize * 0.8;
-    int offset = (m_cellSize - displaySize) / 2; // 居中偏移
-
-    // 平滑缩放图片
-    painter.setRenderHint(QPainter::SmoothPixmapTransform);
-    QPixmap scaledPixmap = m_knightPixmap.scaled(
-        displaySize, displaySize,
-        Qt::KeepAspectRatioByExpanding, // 保持比例并填充
-        Qt::SmoothTransformation        // 平滑变换
-        );
-
-    // 绘制马的图标
-    painter.drawPixmap(x + offset, y + offset, scaledPixmap);
+    // 半透明橙色覆盖（不影响底层数字）
+    QColor highlightColor = m_currentColor;
+    highlightColor.setAlpha(127);
+    painter.fillRect(m_currentPos.x() * cellSize, m_currentPos.y() * cellSize,
+                     cellSize, cellSize, highlightColor);
 }
 
-// 鼠标点击选择起始位置
+// 绘制马的图标（优化缩放和居中）
+void Chessboard::drawKnightIcon(QPainter& painter, int cellSize)
+{
+    if (!isValidPos(m_currentPos) || m_knightPixmap.isNull()) {
+        return;
+    }
+
+    const int iconSize = cellSize * 0.8;
+    const int offset = (cellSize - iconSize) / 2;
+    const QRect iconRect(m_currentPos.x() * cellSize + offset,
+                         m_currentPos.y() * cellSize + offset,
+                         iconSize, iconSize);
+
+    // 保持比例缩放，避免变形
+    painter.drawPixmap(iconRect, m_knightPixmap.scaled(iconRect.size(),
+                                                       Qt::KeepAspectRatio,
+                                                       Qt::SmoothTransformation));
+}
+
+// 鼠标点击处理（优化坐标计算和用户体验）
 void Chessboard::mousePressEvent(QMouseEvent *event)
 {
-    if (m_isRunning)
+    if (m_isRunning) {
+        emit statusChanged(tr("遍历中，无法选择起点"));
         return;
+    }
 
-    // 计算点击的格子坐标
-    int offsetX = (width() - m_cellSize * BOARD_SIZE) / 2;
-    int offsetY = (height() - m_cellSize * BOARD_SIZE) / 2;
-    //用 position() 获取鼠标位置，转换为 int 类型
-    int x = (event->position().x() - offsetX) / m_cellSize;
-    int y = (event->position().y() - offsetY) / m_cellSize;
+    // 计算棋盘实际位置和格子坐标
+    const int cellSize = qMin(width(), height()) / BOARD_SIZE;
+    const int offsetX = (width() - cellSize * BOARD_SIZE) / 2;
+    const int offsetY = (height() - cellSize * BOARD_SIZE) / 2;
 
-    // 检查是否在棋盘范围内
-    if (x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE) {
+    const QPointF mousePos = event->position();
+    const int x = (mousePos.x() - offsetX) / cellSize;
+    const int y = (mousePos.y() - offsetY) / cellSize;
+
+    if (isValidPos(QPoint(x, y))) {
         reset(); // 重置之前的选择
         setStartPosition(QPoint(x, y));
+    } else {
+        emit statusChanged(tr("点击位置无效，请点击棋盘内格子"));
     }
+}
+
+// 窗口大小变化时自适应（优化响应式布局）
+void Chessboard::resizeEvent(QResizeEvent *event)
+{
+    Q_UNUSED(event);
+    update(); // 窗口大小变化时刷新棋盘
 }
