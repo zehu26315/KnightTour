@@ -82,6 +82,7 @@ void Chessboard::loadKnightImage()
 void Chessboard::reset()
 {
     m_animationTimer.stop();
+    m_isPaused = false;
 
     // 高效重置数组（避免重复 memset）
     std::fill_n(&m_board[0][0], BOARD_SIZE * BOARD_SIZE, 0);
@@ -181,6 +182,8 @@ void Chessboard::calculateTour()
 // 动画定时器超时处理（独立槽函数，逻辑清晰）
 void Chessboard::onAnimationTimeout()
 {
+    if (m_isPaused) return; // 暂停时不推进
+
     if (m_animationStep < m_path.size()) {
         m_currentPos = m_path[m_animationStep];
         m_animationStep++;
@@ -197,6 +200,7 @@ void Chessboard::finishAnimation()
 {
     m_animationTimer.stop();
     m_isRunning = false;
+    m_isPaused = false; // 重置暂停状态
 
     if (m_hasSolution) {
         // 标记返回起点的步骤（视觉优化）
@@ -500,6 +504,21 @@ void Chessboard::mousePressEvent(QMouseEvent *event)
     } else {
         emit statusChanged(tr("点击位置无效，请点击棋盘内格子"));
     }
+}
+
+void Chessboard::setPaused(bool paused)
+{
+    if (!m_isRunning) return; // 未运行时忽略
+
+    m_isPaused = paused;
+    if (paused) {
+        m_animationTimer.stop();
+        emit statusChanged(tr("演示已暂停"));
+    } else {
+        m_animationTimer.start();
+        emit statusChanged(tr("演示继续"));
+    }
+    emit pausedChanged(paused); // 同步 UI
 }
 
 // 窗口大小变化时自适应（优化响应式布局）
