@@ -22,11 +22,13 @@ private slots:
     void on_speedBtn_clicked();
     void updateStatus(const QString& status);
     void onTourFinished(bool success);
+    void on_pauseBtn_clicked();
 
 private:
     Ui::MainWindow *ui;
     Chessboard *m_chessboard;
     int m_speedLevel; // 0=慢,1=中,2=快
+    bool m_isPaused = false;    // 是否暂停
 };
 
 #endif // MAINWINDOW_H

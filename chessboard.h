@@ -58,6 +58,12 @@ public:
      */
     void setSpeed(int level);
 
+    /**
+     * @brief 暂停或继续动画演示
+     * @param paused true=暂停，false=继续
+     */
+    void setPaused(bool paused);
+
 signals:
     /**
      * @brief 状态更新信号
@@ -79,6 +85,12 @@ signals:
      * @param enabled true=启用，false=禁用
      */
     void startBtnEnabled(bool enabled);
+
+    /**
+     * @brief 暂停状态改变信号
+     * @param paused 当前是否暂停
+     */
+    void pausedChanged(bool paused);
 
 protected:
     /**
@@ -257,6 +269,7 @@ private:
     bool m_hasSolution = false;      // 是否找到有效路径
     int m_animationStep = 0;         // 动画当前步骤索引
     int m_animationSpeed = 500;      // 动画速度（毫秒/步）
+    bool m_isPaused = false;        // 动画是否暂停
 
     // 工具对象
     QTimer m_animationTimer;         // 动画定时器
