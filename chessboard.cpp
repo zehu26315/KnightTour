@@ -19,7 +19,7 @@ Chessboard::Chessboard(QWidget *parent)
     , m_animationSpeed(500) // 默认中等速度
     , m_lightColor(240, 217, 181)    // #f0d9b5（浅棕）
     , m_darkColor(181, 136, 99)      // #b58863（深棕）
-    , m_selectedColor(100, 181, 246) // #64b5f6（蓝色，选中起点）
+    , m_selectedColor(0, 255, 255) // #00ffff（青色，选中起点）
     , m_pathColor(129, 199, 132)     // #81c784（绿色，路径线）
     , m_currentColor(255, 183, 77)   // #ffb74d（橙色，当前位置）
 {
@@ -161,7 +161,9 @@ void Chessboard::calculateTour()
     m_board[m_startPos.x()][m_startPos.y()] = 1;
     m_path.append(m_startPos);
 
-    m_hasSolution = backtrack(m_startPos.x(), m_startPos.y(), 2);
+    QElapsedTimer backtrackTimer;
+    backtrackTimer.start();
+    m_hasSolution = backtrack(m_startPos.x(), m_startPos.y(), 2, backtrackTimer);
     qDebug() << "路径计算耗时：" << timer.elapsed() << "ms，是否找到解：" << m_hasSolution;
 
     if (m_hasSolution) {
@@ -210,51 +212,49 @@ void Chessboard::finishAnimation()
 }
 
 // 回溯算法核心（优化剪枝和性能）
-bool Chessboard::backtrack(int x, int y, int step)
+bool Chessboard::backtrack(int x, int y, int step, QElapsedTimer& timer)
 {
-    // 超时保护（避免无限递归）
-    static QElapsedTimer backtrackTimer;
-    if (step == 2) { // 首次调用时启动计时器
-        backtrackTimer.start();
-    } else if (backtrackTimer.elapsed() > MAX_BACKTRACK_TIME) {
-        qWarning() << "回溯超时，终止计算";
+    // 超时保护：每次递归都检查（避免深度过大时超时不响应）
+    if (timer.elapsed() > MAX_BACKTRACK_TIME) {
+        qWarning() << "回溯超时，终止计算（已耗时" << timer.elapsed() << "ms）";
         return false;
     }
 
     const int totalSteps = BOARD_SIZE * BOARD_SIZE;
-    // 终止条件：完成所有格子遍历
+
+    // 终止条件：已走完所有 64 个格子
     if (step > totalSteps) {
+        // 检查是否能回到起点（形成闭合回路）
         return canReturnToStart(x, y);
     }
 
-    // 获取并排序有效移动（Warnsdorff优化）
+    // 获取有效移动并按 Warnsdorff 规则排序
     QVector<QPoint> validMoves = getValidMoves(x, y);
     if (validMoves.isEmpty()) {
         return false;
     }
     sortMovesByWarnsdorff(validMoves, x, y, step);
 
-    // 尝试所有移动（优化循环效率）
+    // 尝试每一种移动
     for (const QPoint& dir : validMoves) {
-        const int nx = x + dir.x();
-        const int ny = y + dir.y();
+        int nx = x + dir.x();
+        int ny = y + dir.y();
 
-        // 跳过已访问的位置（双重校验，避免无效操作）
         if (m_visited[nx][ny]) {
             continue;
         }
 
-        // 标记访问状态
+        // 前进：标记状态
         m_visited[nx][ny] = true;
         m_board[nx][ny] = step;
         m_path.append(QPoint(nx, ny));
 
-        // 递归探索（提前返回，减少栈开销）
-        if (backtrack(nx, ny, step + 1)) {
+        // 递归探索下一步（注意：传递 timer 引用）
+        if (backtrack(nx, ny, step + 1, timer)) {
             return true;
         }
 
-        // 回溯：撤销标记（严格对称操作）
+        // 回溯：撤销状态
         m_visited[nx][ny] = false;
         m_board[nx][ny] = 0;
         m_path.removeLast();
@@ -407,6 +407,13 @@ void Chessboard::drawPathLines(QPainter& painter, int cellSize)
         const int x2 = curr.x() * cellSize + halfSize;
         const int y2 = curr.y() * cellSize + halfSize;
         painter.drawLine(x1, y1, x2, y2);
+    }
+    if (m_hasSolution && m_animationStep >= m_path.size()) {
+        const QPoint& last = m_path.last();
+        const QPoint& start = m_path.first();
+        const int half = cellSize / 2;
+        painter.drawLine(last.x()*cellSize + half, last.y()*cellSize + half,
+                         start.x()*cellSize + half, start.y()*cellSize + half);
     }
 }
 

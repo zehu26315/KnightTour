@@ -10,7 +10,13 @@ MainWindow::MainWindow(QWidget *parent)
 
     // 初始化棋盘
     m_chessboard = new Chessboard(this);
-    ui->centralWidget->layout()->addWidget(m_chessboard);
+    // 检查是否有布局，没有则创建
+    QLayout *layout = ui->centralWidget->layout();
+    if (!layout) {
+        layout = new QVBoxLayout(ui->centralWidget); // 自动设置为 centralWidget 的布局
+        layout->setContentsMargins(0, 0, 0, 0);
+    }
+    layout->addWidget(m_chessboard);
 
     // 连接信号槽
     connect(m_chessboard, &Chessboard::statusChanged, this, &MainWindow::updateStatus);

@@ -149,7 +149,7 @@ private:
      * @param step 当前步骤数（从2开始，1为起点）
      * @return 是否找到有效路径
      */
-    bool backtrack(int x, int y, int step);
+    bool backtrack(int x, int y, int step, QElapsedTimer& timer);
 
     /**
      * @brief 检查坐标是否有效（在棋盘内）
